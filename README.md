@@ -56,8 +56,8 @@ All scripts assume they are run from the root of this repository. Data will be d
 
 ### Option 1: Using PowerShell Script (Recommended for full unattended run)
 ```powershell
-# Ensure your 'venv_nasbnn' (or equivalent) environment is active in this PowerShell session
-.\run_nas_pipeline.ps1
+# Ensure your 'nasbnn' (or equivalent) environment is active in this PowerShell session
+.\run_all.ps1
 ```
 The script will guide you through steps, including pausing for parameter review.
 
@@ -67,7 +67,7 @@ The script will guide you through steps, including pausing for parameter review.
     jupyter lab  # or jupyter notebook
     ```
 2.  Open `run_all.ipynb`.
-3.  Ensure the kernel is set to your `venv_nasbnn` environment.
+3.  Ensure the kernel is set to your `nasbnn` environment.
 4.  Run cells sequentially, following the instructions in the markdown cells.
 
 
