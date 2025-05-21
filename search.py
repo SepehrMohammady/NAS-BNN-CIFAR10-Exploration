@@ -111,9 +111,12 @@ def seed(seed_val=0): # Renamed parameter to avoid conflict with module
 
 class EvolutionSearcher:
 
+# Inside EvolutionSearcher class
+
     def __init__(self, model, logger, args, ngpus_per_node):
         self.args = args
         self.ngpus_per_node = ngpus_per_node
+        self.logger = logger  # <<<<<<<<<<<< MOVED HERE (ASSIGNED EARLY)
 
         self.max_epochs = args.max_epochs
         self.population_num = args.population_num
@@ -124,10 +127,24 @@ class EvolutionSearcher:
         self.ops_max = args.ops_max
         self.step = args.step
 
-        if not osp.exists(args.logdir):
-            os.makedirs(args.logdir)
+        # NEW: Probabilities for parent selection strategy
+        self.prob_parent_from_pareto = getattr(args, 'prob_parent_from_pareto', 0.7)
+        self.prob_parent_from_visited = getattr(args, 'prob_parent_from_visited', 0.2)
+        
+        # Now it's safe to use self.logger
+        if is_first_gpu(self.args, self.ngpus_per_node) and self.logger: # self.logger is now defined
+            self.logger.info(f"Parent Selection Strategy: Pareto Prob={self.prob_parent_from_pareto}, Visited Prob={self.prob_parent_from_visited}")
 
-        self.logger = logger
+        # Create logdir if it doesn't exist (args.logdir is for info.pth.tar)
+        if not osp.exists(args.logdir):
+            # Log this action if logger is available and it's the first GPU process
+            if is_first_gpu(self.args, self.ngpus_per_node) and self.logger:
+                self.logger.info(f"Creating search data directory: {args.logdir}")
+            os.makedirs(args.logdir, exist_ok=True)
+        # else: # Optional: log if directory already exists
+            # if is_first_gpu(self.args, self.ngpus_per_node) and self.logger:
+            #    self.logger.info(f"Search data directory already exists: {args.logdir}")
+
 
         self.model = model
         if hasattr(model, 'module'):
@@ -204,6 +221,53 @@ class EvolutionSearcher:
         self.epoch = 0
         self.candidates = []
         self.pareto_global = {}
+
+    # The _select_parent_candidate method you provided is fine as it is.
+    # Just make sure it's correctly indented as a method of the EvolutionSearcher class.
+    # (The code snippet you provided for _select_parent_candidate was correctly indented as a method).
+
+    def _select_parent_candidate(self):
+        rand_val = random.random()
+        parent_cand_tuple = None
+
+        # Try selecting from Pareto front
+        if rand_val < self.prob_parent_from_pareto and self.pareto_global:
+            parent_cand_tuple = random.choice(list(self.pareto_global.values()))
+            if is_first_gpu(self.args, self.ngpus_per_node) and self.logger:
+                self.logger.debug(f"Parent selected from Pareto: {parent_cand_tuple}")
+            return tuple2cand(parent_cand_tuple)
+
+        # Try selecting from other visited (non-Pareto) candidates
+        # The probability for this is self.prob_parent_from_visited
+        # The effective combined probability is self.prob_parent_from_pareto + self.prob_parent_from_visited
+        elif rand_val < (self.prob_parent_from_pareto + self.prob_parent_from_visited) and self.vis_dict:
+            all_visited_tuples = list(self.vis_dict.keys())
+            pareto_tuples_set = set(self.pareto_global.values())
+            non_pareto_visited = [t for t in all_visited_tuples if t not in pareto_tuples_set]
+            
+            if non_pareto_visited:
+                parent_cand_tuple = random.choice(non_pareto_visited)
+                if is_first_gpu(self.args, self.ngpus_per_node) and self.logger:
+                    self.logger.debug(f"Parent selected from non-Pareto visited: {parent_cand_tuple}")
+                return tuple2cand(parent_cand_tuple)
+        
+        # Fallback 1: Select from the current self.candidates list
+        # (which holds results from the previous generation's mutation/crossover, or initial random set)
+        if self.candidates: # self.candidates should store tuples
+            parent_cand_tuple = random.choice(self.candidates)
+            if is_first_gpu(self.args, self.ngpus_per_node) and self.logger:
+                self.logger.debug(f"Parent selected from self.candidates (previous generation): {parent_cand_tuple}")
+            return tuple2cand(parent_cand_tuple)
+
+        # Absolute Fallback 2: Generate a fresh random valid candidate (should be rare)
+        if is_first_gpu(self.args, self.ngpus_per_node) and self.logger:
+            self.logger.warning("No suitable parents from Pareto/Visited/Candidates. Generating a fresh random parent.")
+        # This get_random_range_cand returns a tensor, no need for tuple2cand here.
+        # Note: This fresh random candidate won't be in vis_dict yet until evaluated.
+        fresh_random_parent = self.m.get_random_range_cand(self.ops_min, self.ops_max)
+        if is_first_gpu(self.args, self.ngpus_per_node) and self.logger:
+            self.logger.debug(f"Parent selected as fresh random: {cand2tuple(fresh_random_parent)}")
+        return fresh_random_parent
 
     def save_checkpoint(self):
         info = {}
@@ -307,19 +371,10 @@ class EvolutionSearcher:
 
         while len(res) < self.mutation_num and attempts < max_attempts:
             attempts += 1
-            if not self.pareto_global: # Handle empty pareto_global if search is too short
-                if is_first_gpu(self.args, self.ngpus_per_node):
-                    self.logger.warning("Pareto front is empty for mutation. Using a random candidate as parent.")
-                if not self.candidates: # If even candidates list is empty
-                     parent_cand_tuple = cand2tuple(self.m.get_random_range_cand(self.ops_min, self.ops_max))
-                else:
-                     parent_cand_tuple = random.choice(self.candidates) # Fallback
-                ori_cand = tuple2cand(parent_cand_tuple)
-            else:
-                ori_cand = tuple2cand(
-                    random.choice(list(self.pareto_global.values())))
             
-            cand = ori_cand.clone()
+            ori_cand_tensor = self._select_parent_candidate()
+            
+            cand = ori_cand_tensor.clone()
             # ... (original mutation logic for cand)
             search_space = self.m.search_space
             stage_first = [0] * len(search_space)
@@ -387,44 +442,33 @@ class EvolutionSearcher:
 
     def get_crossover(self):
         res = []
-        attempts = 0 # Safety break
-        max_attempts = self.crossover_num * 50 # Allow more attempts
+        attempts = 0 
+        max_attempts = self.crossover_num * 50 
 
         while len(res) < self.crossover_num and attempts < max_attempts:
             attempts += 1
-            if not self.pareto_global: # Handle empty pareto_global
-                if is_first_gpu(self.args, self.ngpus_per_node):
-                    self.logger.warning("Pareto front is empty for crossover. Using random candidates as parents.")
-                if not self.candidates:
-                     parent1_tuple = cand2tuple(self.m.get_random_range_cand(self.ops_min, self.ops_max))
-                     parent2_tuple = cand2tuple(self.m.get_random_range_cand(self.ops_min, self.ops_max))
-                else:
-                     parent1_tuple = random.choice(self.candidates)
-                     parent2_tuple = random.choice(self.candidates)
-                cand1 = tuple2cand(parent1_tuple)
-                cand2 = tuple2cand(parent2_tuple)
-            else:
-                cand1 = tuple2cand(random.choice(list(self.pareto_global.values())))
-                cand2 = tuple2cand(random.choice(list(self.pareto_global.values())))
 
-            # ... (original crossover logic: d_list, mask, cand generation) ...
+            cand1_tensor = self._select_parent_candidate() 
+            cand2_tensor = self._select_parent_candidate() 
+
             search_space = self.m.search_space
             d_list = []
-            for i in range(len(search_space)):
-                # Count active blocks for cand1 in stage i
+            for i_stage_idx in range(len(search_space)): # Renamed 'i' to avoid conflict if 'i' is used later
                 d1_count = 0
-                for row_idx in range(cand1.shape[0]):
-                    if cand1[row_idx, 0] == i:
+                # Iterate over rows of cand1_tensor to count active blocks in current stage
+                for row_idx in range(cand1_tensor.shape[0]): # Use cand1_tensor
+                    if cand1_tensor[row_idx, 0] == i_stage_idx: 
                         d1_count +=1
-                # Count active blocks for cand2 in stage i
+                
                 d2_count = 0
-                for row_idx in range(cand2.shape[0]):
-                    if cand2[row_idx, 0] == i:
+                # Iterate over rows of cand2_tensor
+                for row_idx in range(cand2_tensor.shape[0]): # Use cand2_tensor
+                    if cand2_tensor[row_idx, 0] == i_stage_idx:
                         d2_count +=1
                 d_list.append(random.choice([d1_count, d2_count]))
 
-            mask = torch.rand_like(cand1.float()).round().int()
-            cand = mask * cand1 + (1 - mask) * cand2
+            mask = torch.rand_like(cand1_tensor.float()).round().int() # Use cand1_tensor
+            cand = mask * cand1_tensor + (1 - mask) * cand2_tensor   # Use cand1_tensor and cand2_tensor
             
             # Fix stage and block numbers after crossover based on d_list
             current_row_idx = 0
