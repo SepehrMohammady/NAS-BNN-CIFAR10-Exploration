@@ -87,4 +87,4 @@ After a full run, you can expect:
 - For the CIFAR-10 setup used, fine-tuned accuracies were in the range of 55-58% Top-1 on the validation set.
 
 ## License
-The original NAS-BNN code is available under its own license (see `README-Authors.md`). Modifications and scripts added in this repository are provided under the [License].
+The original NAS-BNN code is available under its own license (see `README-Authors.md`). Modifications and scripts added in this repository are provided under the [LICENSE](LICENSE).
