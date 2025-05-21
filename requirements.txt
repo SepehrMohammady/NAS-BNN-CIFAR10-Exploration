@@ -1,0 +1,19 @@
+torch==2.7.0
+torchvision==0.22.0
+torchaudio==2.7.0
+
+numpy>=1.20 # General data handling
+scikit-learn>=1.0 # For train_test_split
+pillow>=9.0 # Image processing
+matplotlib>=3.5 # Plotting
+seaborn>=0.12 # Statistical plotting
+tensorboard>=2.10 # Logging for PyTorch
+tqdm>=4.60 # Progress bars
+warmup-scheduler==0.3 # From the project
+pandas # Often useful
+scipy # Often useful
+
+# Jupyter environment
+jupyterlab 
+notebook
+ipykernel 
